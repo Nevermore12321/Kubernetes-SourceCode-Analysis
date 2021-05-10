@@ -230,7 +230,7 @@ gen_prerelease_lifecycle: $(PRERELEASE_LIFECYCLE_GEN) $(META_DIR)/$(PRERELEASE_L
 	    echo "Generating prerelease lifecycle code for $$N targets";               \
 	    # 这一步就是自动生成代码
 	    # 利用 ./hack/run-in-gopath.sh 脚本 执行 代码生成工具 prerelease-lifecycle-gen 来生成代码，并且传入参数
-	    # $@ 表示目标文件, $$@ 表示将 目标文件变量放入到 shell 中
+	    # $@ 表示目标文件, $$@ 表示取Shell中的 目标文件变量 中
 	    ./hack/run-in-gopath.sh $(PRERELEASE_LIFECYCLE_GEN)                        \
 	        --v $(KUBE_VERBOSE)                                                    \
 	        --logtostderr                                                          \
@@ -297,6 +297,7 @@ $(PRERELEASE_LIFECYCLE_GEN): $(GODEPS_k8s.io/kubernetes/vendor/k8s.io/code-gener
 	KUBE_BUILD_PLATFORMS="" hack/make-rules/build.sh ./vendor/k8s.io/code-generator/cmd/prerelease-lifecycle-gen
 	# 创建文件 _output/bin/prerelease-lifecycle-gen
 	touch $@
+
 
 
 
