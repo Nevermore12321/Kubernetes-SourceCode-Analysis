@@ -95,20 +95,25 @@ kube::util::wait_for_success(){
 
 # Example:  kube::util::trap_add 'echo "in trap DEBUG"' DEBUG
 # See: http://stackoverflow.com/questions/3338030/multiple-bash-traps-for-the-same-signal
+# trap 命令用于捕捉信号，捕捉到信号后，进行操作
+# 这里封装了 trap ，可以添加 操作的指令，高级**
 kube::util::trap_add() {
   local trap_add_cmd
   trap_add_cmd=$1
   shift
 
+  # trap_add_name 就是要添加的 信号名称
   for trap_add_name in "$@"; do
     local existing_cmd
     local new_cmd
 
     # Grab the currently defined trap commands for this trap
+    # trap -p 显示与每个信号关联的trap命令。
     existing_cmd=$(trap -p "${trap_add_name}" |  awk -F"'" '{print $2}')
-
+    # 如果 与这个信号关联的 trap 命令不存在，那么 new_cmd 就是传入的这个命令
     if [[ -z "${existing_cmd}" ]]; then
       new_cmd="${trap_add_cmd}"
+    # 如果 与这个信号关联的trap 命令已经存在，就添加传入的命令
     else
       new_cmd="${trap_add_cmd};${existing_cmd}"
     fi
@@ -118,6 +123,7 @@ kube::util::trap_add() {
     # point instead evaluating them at run time. The logic of adding new
     # commands to a single trap requires them to be evaluated right away.
     # shellcheck disable=SC2064
+    # 重新添加 到 trap 中。
     trap "${new_cmd}" "${trap_add_name}"
   done
 }

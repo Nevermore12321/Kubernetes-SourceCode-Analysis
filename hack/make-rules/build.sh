@@ -30,6 +30,8 @@ KUBE_VERBOSE="${KUBE_VERBOSE:-1}"
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
 # 调用函数 kube::golang::build_binaries 并且传入 ./vendor/k8s.io/code-generator/cmd/prerelease-lifecycle-gen 参数
-#
+# build_binaries 函数进行 编译构建
 kube::golang::build_binaries "$@"
+# place_bins 就是将二进制文件拷贝到 ${KUBE_OUTPUT_BINDIR}/${platform} 目录中 ，也就是 ${KUBE_ROOT}/_output/local/bin
 kube::golang::place_bins
+

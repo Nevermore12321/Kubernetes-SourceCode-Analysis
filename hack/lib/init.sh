@@ -31,8 +31,10 @@ export GO111MODULE=off
 # The root of the build/dist directory
 KUBE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
+# KUBE_OUTPUT 为 ${KUBE_ROOT}/_output/local
 KUBE_OUTPUT_SUBPATH="${KUBE_OUTPUT_SUBPATH:-_output/local}"
 KUBE_OUTPUT="${KUBE_ROOT}/${KUBE_OUTPUT_SUBPATH}"
+# KUBE_OUTPUT_BINPATH 为 ${KUBE_ROOT}/_output/local/bin
 KUBE_OUTPUT_BINPATH="${KUBE_OUTPUT}/bin"
 
 # This controls rsync compression. Set to a value > 0 to enable rsync

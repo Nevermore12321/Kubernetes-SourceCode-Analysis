@@ -18,6 +18,7 @@
 
 # The golang package that we are building.
 readonly KUBE_GO_PACKAGE=k8s.io/kubernetes
+# 这里的 KUBE_GOPATH = _output/local/go
 readonly KUBE_GOPATH="${KUBE_OUTPUT}/go"
 
 # The server platform we are building on.
@@ -351,6 +352,7 @@ readonly KUBE_STATIC_LIBRARIES=(
 )
 
 # Fully-qualified package names that we want to instrument for coverage information.
+# 所有 可以做 覆盖检测 的软件包列表，也就是 可以使用 go test 构建的软件包列表
 readonly KUBE_COVERAGE_INSTRUMENTED_PACKAGES=(
   k8s.io/kubernetes/cmd/kube-apiserver
   k8s.io/kubernetes/cmd/kube-controller-manager
@@ -458,7 +460,7 @@ kube::golang::set_platform_envs() {
   fi
 
   # if CC is defined for platform then always enable it
-  # 如果交叉编译 允许，那么就开启
+  # 如果 交叉编译 允许，那么就开启 CGo
   ccenv=$(echo "$platform" | awk -F/ '{print "KUBE_" toupper($1) "_" toupper($2) "_CC"}')
   if [ -n "${!ccenv-}" ]; then 
     export CGO_ENABLED=1
@@ -567,7 +569,13 @@ kube::golang::setup_env() {
 # install' will place binaries that match the host platform directly in $GOBIN
 # while placing cross compiled binaries into `platform_arch` subdirs.  This
 # complicates pretty much everything else we do around packaging and such.
+
+# place_bins 函数将 二进制文件 从 $GOPATH/bin 目录 拷贝到 ${KUBE_OUTPUT_BINDIR}/${platform} 目录，也就是
+# 理想情况下这一步是不需要的，可以直接将 GOBIN 设置成 KUBE_OUTPUT_BINDIR，但是交叉编译时这就不起作用
+# go install 在普通编译时将 二进制文件放入到 GOBIN 中
+# go install 在交叉编译时，将二进制文件放入到 platform_arch 目录中，例如 linux_amd64
 kube::golang::place_bins() {
+  # 获取 平台platform 的系统信息
   local host_platform
   host_platform=$(kube::golang::host_platform)
 
@@ -577,16 +585,29 @@ kube::golang::place_bins() {
   for platform in "${KUBE_CLIENT_PLATFORMS[@]}"; do
     # The substitution on platform_src below will replace all slashes with
     # underscores.  It'll transform darwin/amd64 -> darwin_amd64.
+    # ${变量名//旧字符串/新字符串} 满足旧字符串规则的，全部替换成新字符串
+    # 将 platform 中的 / 替换成 _ ，我这里本机 platform 为 linux/amd64，替换后为 linux_amd64
     local platform_src="/${platform//\//_}"
+    # 如果 platform 是本机
     if [[ "${platform}" == "${host_platform}" ]]; then
       platform_src=""
+      # 删除 THIS_PLATFORM_BIN="${KUBE_ROOT}/_output/bin"
       rm -f "${THIS_PLATFORM_BIN}"
+      # KUBE_OUTPUT_BINPATH 为 ${KUBE_ROOT}/_output/local/bin
+      # 建立软连接，源：${KUBE_ROOT}/_output/local/bin/linux/amd64 链接：${KUBE_ROOT}/_output/bin
       ln -s "${KUBE_OUTPUT_BINPATH}/${platform}" "${THIS_PLATFORM_BIN}"
     fi
-
+    # 如果 platform 是本机，那么 full_binpath_src 为 _output/local/go/bin
+    # 如果 platform 不是 本机，那么 full_binpath_src 为 _output/local/go/bin/linux_amd64
     local full_binpath_src="${KUBE_GOPATH}/bin${platform_src}"
+
     if [[ -d "${full_binpath_src}" ]]; then
+      # 创建 ${KUBE_ROOT}/_output/local/bin/linux/amd64
       mkdir -p "${KUBE_OUTPUT_BINPATH}/${platform}"
+      # -exec: 对搜索到的文件执行特定的操作，格式为 -exec command {} \;
+      # 注意： {} 表示find搜索到的所有的结果， 在命令最后 一定要加 \;
+      # rsync是linux系统下的数据镜像备份工具。支持本地复制，或者与其他SSH、rsync主机同步。这里用来拷贝本地文件
+      # 整条命令是 将 full_binpath_src 下的所有文件，拷贝到 ${KUBE_ROOT}/_output/local/bin/linux/amd64
       find "${full_binpath_src}" -maxdepth 1 -type f -exec \
         rsync -pc {} "${KUBE_OUTPUT_BINPATH}/${platform}" \;
     fi
@@ -617,28 +638,45 @@ kube::golang::outfile_for_binary() {
 # Argument: the name of a Kubernetes package.
 # Returns 0 if the binary can be built with coverage, 1 otherwise.
 # NB: this ignores whether coverage is globally enabled or not.
+# is_instrumented_package 函数用来判断 target 是否可以进行 覆盖检测
+# 传入参数：target 软件包
+# 如果 target 可以 覆盖检测，返回1，否则返回0
 kube::golang::is_instrumented_package() {
+  # array_contains target, item1, item2, item3, ...  判断 target 是否在后面 item 中，如果在，返回0，否则返回1
   kube::util::array_contains "$1" "${KUBE_COVERAGE_INSTRUMENTED_PACKAGES[@]}"
   return $?
 }
 
 # Argument: the name of a Kubernetes package (e.g. k8s.io/kubernetes/cmd/kube-scheduler)
 # Echos the path to a dummy test used for coverage information.
+# path_for_coverage_dummy_test 函数 用来返回一个 用于单元测试的文件，也就是后缀为 _test，用于 测试
+# 传入参数：某个target，也就是 package名称
 kube::golang::path_for_coverage_dummy_test() {
   local package="$1"
+  # KUBE_GOPATH = _output/local/go
+  # 那么 path 就为：_output/local/go/src/path-to-package
   local path="${KUBE_GOPATH}/src/${package}"
   local name
+  # name 表示 package 的 名称
   name=$(basename "${package}")
+  # 返回 路径/zz_generated_${name}_test.go 测试文件完整路径
   echo "${path}/zz_generated_${name}_test.go"
 }
 
 # Argument: the name of a Kubernetes package (e.g. k8s.io/kubernetes/cmd/kube-scheduler).
 # Creates a dummy unit test on disk in the source directory for the given package.
 # This unit test will invoke the package's standard entry point when run.
+# create_coverage_dummy_test 函数
+# 传入参数：某个target，也就是 package名称
+# 在给定软件包的源目录中的磁盘上创建一个虚拟单元测试。
+# 运行时，此单元测试将调用软件包的标准入口点。
 kube::golang::create_coverage_dummy_test() {
   local package="$1"
   local name
+  # name 表示 package 的目录
   name="$(basename "${package}")"
+  # path_for_coverage_dummy_test 函数 返回完整的测试文件的完整路径
+  # 下面 cat 用于创建这个文件，并写入下面的内容
   cat <<EOF > "$(kube::golang::path_for_coverage_dummy_test "${package}")"
 package main
 import (
@@ -665,6 +703,8 @@ EOF
 # Argument: the name of a Kubernetes package (e.g. k8s.io/kubernetes/cmd/kube-scheduler).
 # Deletes a test generated by kube::golang::create_coverage_dummy_test.
 # It is not an error to call this for a nonexistent test.
+# 删除 测试文件
+# 传入参数：target名称
 kube::golang::delete_coverage_dummy_test() {
   local package="$1"
   rm -f "$(kube::golang::path_for_coverage_dummy_test "${package}")"
@@ -679,32 +719,47 @@ kube::golang::delete_coverage_dummy_test() {
 # go install. If coverage is enabled, builds covered binaries using go test, temporarily
 # producing the required unit test files and then cleaning up after itself.
 # Non-covered binaries are then built using go install as usual.
+# build_some_binaries 函数 是具体编译构建 target 的过程
+# 传入： 要构建的kubernetes软件包列表，target 列表
+# 预配置的变量：${build_args} 是 编译的参数； ${platform} 平台的系统信息
+# 预配置的环境变量：${KUBE_BUILD_WITH_COVERAGE} 是否启用覆盖检测
+# 如果禁用了覆盖率，则只需调用go install。 如果启用覆盖检测，则使用go test构建覆盖的二进制文件，临时生成所需的单元测试文件，然后对其进行清理。
 kube::golang::build_some_binaries() {
+  # 如果 开启了 覆盖检测
   if [[ -n "${KUBE_BUILD_WITH_COVERAGE:-}" ]]; then
     local -a uncovered=()
+    # 遍历每一个 target
     for package in "$@"; do
+      # 这里注意： shell 编程中，0是True，1是false
+      # 这里判断如果 当前 package 是 可覆盖检测的，那么就进行 go test 编译
       if kube::golang::is_instrumented_package "${package}"; then
         V=2 kube::log::info "Building ${package} with coverage..."
-
+        # create_coverage_dummy_test 函数 创建 该 package 的测试文件，并写入调用 main 函数的 测试内容
         kube::golang::create_coverage_dummy_test "${package}"
+        # 将删除测试文件，添加到 trap 捕捉 EXIT 信号 的 操作指令中，
         kube::util::trap_add "kube::golang::delete_coverage_dummy_test \"${package}\"" EXIT
-
+        # 执行 go test 进行 覆盖检测
+        # 最后在退出时，trap 检测到 EXIT 信号，则执行 delete_coverage_dummy_test 函数，删除 测试文件
         go test -c -o "$(kube::golang::outfile_for_binary "${package}" "${platform}")" \
           -covermode count \
           -coverpkg k8s.io/...,k8s.io/kubernetes/vendor/k8s.io/... \
           "${build_args[@]}" \
           -tags coverage \
           "${package}"
+      # 如果 当前的 package 是不可以覆盖检测，那么 添加到 uncovered 列表中
       else
         uncovered+=("${package}")
       fi
     done
+
+    # 这里就是 禁止 覆盖检测 编译的逻辑，直接使用 go install
     if [[ "${#uncovered[@]}" != 0 ]]; then
       V=2 kube::log::info "Building ${uncovered[*]} without coverage..."
       go install "${build_args[@]}" "${uncovered[@]}"
     else
       V=2 kube::log::info "Nothing to build without coverage."
-     fi
+    fi
+   # 如果没有开启 覆盖检测，KUBE_BUILD_WITH_COVERAGE 为空，那么就直接 go install 进行编译
    else
     V=2 kube::log::info "Coverage is disabled."
     go install "${build_args[@]}" "$@"
@@ -773,7 +828,7 @@ kube::golang::build_binaries_for_platform() {
   # 编译.test ，直接用 go test 编译，并且执行测试文件
   for test in "${tests[@]:+${tests[@]}}"; do
     local outfile testpkg
-    # 输出目录
+    # outfile_for_binary 函数 返回 输出目录
     outfile=$(kube::golang::outfile_for_binary "${test}" "${platform}")
     testpkg=$(dirname "${test}")
 
@@ -905,7 +960,7 @@ kube::golang::build_binaries() {
     while IFS="" read -r binary; do binaries+=("$binary"); done < <(kube::golang::binaries_from_targets "${targets[@]}")
 
     local parallel=false
-    # 如果需要编译的平台 platforms 只有一个
+    # 如果需要编译的平台 platforms 大于一个，就可以开启并行模式
     if [[ ${#platforms[@]} -gt 1 ]]; then
       local gigs
       # 获取 物理机的可用内存
