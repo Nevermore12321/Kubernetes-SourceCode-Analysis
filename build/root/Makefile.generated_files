@@ -206,7 +206,7 @@ PRERELEASE_LIFECYCLE_FILES := $(addsuffix /$(PRERELEASE_LIFECYCLE_FILENAME), $(P
 # 生成目录 .make/_output/bin/
 $(shell mkdir -p $$(dirname $(META_DIR)/$(PRERELEASE_LIFECYCLE_GEN)))
 # 并且删除 .make/_output/bin/prerelease-lifecycle-gen.todo 文件
-# todo 文件，表示这个构建需要做的目标
+# todo 文件，表示这个编译构建，哪些目录需要自动生成 prerelease-lifecycle 文件
 $(shell rm -f $(META_DIR)/$(PRERELEASE_LIFECYCLE_GEN).todo)
 
 # This rule aggregates the set of files to generate and then generates them all
@@ -250,7 +250,7 @@ gen_prerelease_lifecycle: $(PRERELEASE_LIFECYCLE_GEN) $(META_DIR)/$(PRERELEASE_L
 # would otherwise produce results that make can't parse.
 #
 #
-# 这里的代码是自动生成所有的 path/to/files/zz_generated.prerelease-lifecycle 文件
+# 这里的代码是自动生成所有的 path/to/files/zz_generated.prerelease-lifecycle.go 文件
 # makefile 中的 fareach 函数 $(foreach <var>,<list>,<text> )
 # 意思是，把参数<list>中的单词逐一取出放到参数<var>所指定的变量中，然后再执行<text>所包含的表达式
 # makefile 中的 eval 函数，表示 作为makefile的一部分而被make解析和执行。
@@ -294,6 +294,7 @@ $(PRERELEASE_LIFECYCLE_FILES): $(PRERELEASE_LIFECYCLE_GEN)
 $(PRERELEASE_LIFECYCLE_GEN): $(GODEPS_k8s.io/kubernetes/vendor/k8s.io/code-generator/cmd/prerelease-lifecycle-gen)
 	# 使用 hack/make-rules/build.sh 脚本来编译生成 prerelease-lifecycle-gen 代码生成器工具，编译的地址在 ./vendor/k8s.io/code-generator/cmd/prerelease-lifecycle-gen
 	# 其实 这个目录应该是在 staging/src/k8s.io/code-generator/cmd/prerelease-lifecycle-gen
+	# KUBE_BUILD_PLATFORMS 传入 平台系统信息。
 	KUBE_BUILD_PLATFORMS="" hack/make-rules/build.sh ./vendor/k8s.io/code-generator/cmd/prerelease-lifecycle-gen
 	# 创建文件 _output/bin/prerelease-lifecycle-gen
 	touch $@
@@ -303,6 +304,7 @@ $(PRERELEASE_LIFECYCLE_GEN): $(GODEPS_k8s.io/kubernetes/vendor/k8s.io/code-gener
 
 
 # --------------------- Deep-copy 代码生成器逻辑-------------------
+
 
 # Deep-copy generation
 #
@@ -315,11 +317,21 @@ $(PRERELEASE_LIFECYCLE_GEN): $(GODEPS_k8s.io/kubernetes/vendor/k8s.io/code-gener
 #     register: generate deep-copy functions and register them with a
 #               scheme
 
+# 使用 Deep-copy 代码生成器的 Tags 格式：
+#     // +k8s:deepcopy-gen=<VALUE>
+#   <VALUE> 可以为：
+#       1. generate : 生成DeepCopy相关函数
+#       2. register : 生成DeepCopy相关函数 并且 通过 scheme 注册函数
+
+
 # The result file, in each pkg, of deep-copy generation.
+# GENERATED_FILE_PREFIX 变量在 Main Makefile 中定义为 GENERATED_FILE_PREFIX := zz_generated.
+# 所以 Deep-copy  生成器生成的文件名为 zz_generated.deepcopy.go
 DEEPCOPY_BASENAME := $(GENERATED_FILE_PREFIX)deepcopy
 DEEPCOPY_FILENAME := $(DEEPCOPY_BASENAME).go
 
 # The tool used to generate deep copies.
+# DEEPCOPY_GEN 表示 deepcopy-gen 这个二进制工具文件
 DEEPCOPY_GEN := $(BIN_DIR)/deepcopy-gen
 
 # Find all the directories that request deep-copy generation.

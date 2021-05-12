@@ -16,8 +16,13 @@
 
 # This script sets up a go workspace locally and builds all go components.
 
+# set -o errexit 等同于 set -e
+# 表示 如果命令以非零状态退出，则立即退出。
 set -o errexit
+# set -o nounset 等同于 set -u
+# 表示 替换时，将未设置的变量视为错误。
 set -o nounset
+# 表示 管道的返回值是最后一个以非零状态退出的命令的状态，如果没有命令以非零状态退出，则返回零。
 set -o pipefail
 
 #  KUBE_ROOT 变量为：hack/make-rules/../.. 找到 根目录
