@@ -24,8 +24,12 @@
 ###############################################################################
 
 # This is where the final release artifacts are created locally
+# 设置 output 目录
+# RELEASE_STAGE 表示
 readonly RELEASE_STAGE="${LOCAL_OUTPUT_ROOT}/release-stage"
+# RELEASE_TARS 表示 二进制文件 打包后放入的文件
 readonly RELEASE_TARS="${LOCAL_OUTPUT_ROOT}/release-tars"
+# RELEASE_IMAGES 表示 image 的位置
 readonly RELEASE_IMAGES="${LOCAL_OUTPUT_ROOT}/release-images"
 
 KUBE_BUILD_CONFORMANCE=${KUBE_BUILD_CONFORMANCE:-n}
@@ -86,8 +90,11 @@ function kube::release::clean_cruft() {
 
 function kube::release::package_tarballs() {
   # Clean out any old releases
+  # 删除之前构建的目录
   rm -rf "${RELEASE_STAGE}" "${RELEASE_TARS}" "${RELEASE_IMAGES}"
   mkdir -p "${RELEASE_TARS}"
+
+  # 下面就是使用 tar 来压缩 哥哥文件夹
   kube::release::package_src_tarball &
   kube::release::package_client_tarballs &
   kube::release::package_kube_manifests_tarball &

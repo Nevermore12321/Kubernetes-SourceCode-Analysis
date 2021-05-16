@@ -28,7 +28,7 @@ USER_ID=$(id -u)
 GROUP_ID=$(id -g)
 
 DOCKER_OPTS=${DOCKER_OPTS:-""}
-IFS=" " read -r -a DOCKER <<< "docker ${DOCKER_OPTS}"
+IFS=" " read -r -a DOCKER <<<"docker ${DOCKER_OPTS}"
 DOCKER_HOST=${DOCKER_HOST:-""}
 
 # This will canonicalize the path
@@ -37,7 +37,10 @@ KUBE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd -P)
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
 # Constants
+
 readonly KUBE_BUILD_IMAGE_REPO=kube-build
+
+# KUBE_BUILD_IMAGE_CROSS_TAG 表示 要拉取 的基本镜像的 tag 名： v1.16.1-1
 readonly KUBE_BUILD_IMAGE_CROSS_TAG="$(cat "${KUBE_ROOT}/build/build-image/cross/VERSION")"
 
 readonly KUBE_DOCKER_REGISTRY="${KUBE_DOCKER_REGISTRY:-k8s.gcr.io}"
@@ -49,6 +52,7 @@ readonly KUBE_BASE_IMAGE_REGISTRY="${KUBE_BASE_IMAGE_REGISTRY:-k8s.gcr.io/build-
 #
 # Increment/change this number if you change the build image (anything under
 # build/build-image) or change the set of volumes in the data container.
+# image 的版本号，我这里是 5 ，KUBE_BUILD_IMAGE_VERSION 为 5-v1.16.1-1
 readonly KUBE_BUILD_IMAGE_VERSION_BASE="$(cat "${KUBE_ROOT}/build/build-image/VERSION")"
 readonly KUBE_BUILD_IMAGE_VERSION="${KUBE_BUILD_IMAGE_VERSION_BASE}-${KUBE_BUILD_IMAGE_CROSS_TAG}"
 
@@ -140,39 +144,67 @@ kube::build::get_docker_wrapped_binaries() {
 #   KUBE_RSYNC_CONTAINER_NAME
 #   DOCKER_MOUNT_ARGS
 #   LOCAL_OUTPUT_BUILD_CONTEXT
+
+# 验证是否安装了 docker 环境
+# 传入参数：是否 要求 有docker环境，默认 true
 function kube::build::verify_prereqs() {
   local -r require_docker=${1:-true}
   kube::log::status "Verifying Prerequisites...."
-  kube::build::ensure_tar || return 1
-  kube::build::ensure_rsync || return 1
-  if ${require_docker}; then
-    kube::build::ensure_docker_in_path || return 1
-    if kube::build::is_osx; then
-        kube::build::docker_available_on_osx || return 1
-    fi
-    kube::util::ensure_docker_daemon_connectivity || return 1
 
-    if (( KUBE_VERBOSE > 6 )); then
+  # 确认 tar 命令
+  kube::build::ensure_tar || return 1
+  # 确认 rsync 命令
+  kube::build::ensure_rsync || return 1
+  # 如果必须要有 docker 运行环境
+  if ${require_docker}; then
+    # 确认 docker 环境
+    kube::build::ensure_docker_in_path || return 1
+    # 如果是 Darwin 系统
+    if kube::build::is_osx; then
+      # 检查 docker.sock
+      kube::build::docker_available_on_osx || return 1
+    fi
+    # 检查 是否可以运行 docker 命令
+    kube::util::ensure_docker_daemon_connectivity || return 1
+    # 打印 docker Version 信息
+    if ((KUBE_VERBOSE > 6)); then
       kube::log::status "Docker Version:"
       "${DOCKER[@]}" version | kube::log::info_from_stdin
     fi
   fi
 
+  # 当前的 git 分支
   KUBE_GIT_BRANCH=$(git symbolic-ref --short -q HEAD 2>/dev/null || true)
+  # 用 md5 命令 求 hash 值
   KUBE_ROOT_HASH=$(kube::build::short_hash "${HOSTNAME:-}:${KUBE_ROOT}:${KUBE_GIT_BRANCH}")
+  # build 出 image 的 tag前缀 为 build-Hash值
   KUBE_BUILD_IMAGE_TAG_BASE="build-${KUBE_ROOT_HASH}"
+  # KUBE_BUILD_IMAGE_VERSION 为 5-v1.16.1-1
+  # build 出 image 的 整个 tag
   KUBE_BUILD_IMAGE_TAG="${KUBE_BUILD_IMAGE_TAG_BASE}-${KUBE_BUILD_IMAGE_VERSION}"
+  # 需要拉取的镜像名称：kube-build:build-HASH-5-v1.16.1-1
   KUBE_BUILD_IMAGE="${KUBE_BUILD_IMAGE_REPO}:${KUBE_BUILD_IMAGE_TAG}"
+  # 这里一共需要 三个容器来进行构建工作：
+  # 1. BUILD 容器，构建容器
+  # 2. RSYNC 容器，同步数据容器
+  # 3. DATA 容器，存储容器
+  # build container Name : kube-build-HASH-5-v1.16.1-1
   KUBE_BUILD_CONTAINER_NAME_BASE="kube-build-${KUBE_ROOT_HASH}"
   KUBE_BUILD_CONTAINER_NAME="${KUBE_BUILD_CONTAINER_NAME_BASE}-${KUBE_BUILD_IMAGE_VERSION}"
+  # RSYNC container NAME: kube-rsync-build-HASH-5-v1.16.1-1
   KUBE_RSYNC_CONTAINER_NAME_BASE="kube-rsync-${KUBE_ROOT_HASH}"
   KUBE_RSYNC_CONTAINER_NAME="${KUBE_RSYNC_CONTAINER_NAME_BASE}-${KUBE_BUILD_IMAGE_VERSION}"
+  # DATA container Name: kube-build-data-build-HASH-5-v1.16.1-1
   KUBE_DATA_CONTAINER_NAME_BASE="kube-build-data-${KUBE_ROOT_HASH}"
   KUBE_DATA_CONTAINER_NAME="${KUBE_DATA_CONTAINER_NAME_BASE}-${KUBE_BUILD_IMAGE_VERSION}"
+  # DATA 容器挂载目录的路径
   DOCKER_MOUNT_ARGS=(--volumes-from "${KUBE_DATA_CONTAINER_NAME}")
+  # 这个是 编译 image 的路径，也就是 Dockerfile 的所在的目录，目录为：_output/images/kube-build:build-HASH-5-v1.16.1-1/
   LOCAL_OUTPUT_BUILD_CONTEXT="${LOCAL_OUTPUT_IMAGE_STAGING}/${KUBE_BUILD_IMAGE}"
 
+  # 设置 git 相关的环境变量
   kube::version::get_version_vars
+  # 将环境变量 保存在 指定的文件中
   kube::version::save_version_vars "${KUBE_ROOT}/.dockerized-kube-version-defs"
 
   # Without this, the user's umask can leak through.
@@ -227,11 +259,11 @@ function kube::build::ensure_tar() {
   # Find gnu tar if it is available, bomb out if not.
   TAR=tar
   if which gtar &>/dev/null; then
-      TAR=gtar
+    TAR=gtar
   else
-      if which gnutar &>/dev/null; then
-	  TAR=gnutar
-      fi
+    if which gnutar &>/dev/null; then
+      TAR=gnutar
+    fi
   fi
   if ! "${TAR}" --version | grep -q GNU; then
     echo "  !!! Cannot find GNU tar. Build on Linux or install GNU tar"
@@ -241,11 +273,11 @@ function kube::build::ensure_tar() {
 }
 
 function kube::build::has_docker() {
-  which docker &> /dev/null
+  which docker &>/dev/null
 }
 
 function kube::build::has_ip() {
-  which ip &> /dev/null && ip -Version | grep 'iproute2' &> /dev/null
+  which ip &>/dev/null && ip -Version | grep 'iproute2' &>/dev/null
 }
 
 # Detect if a specific image exists
@@ -269,13 +301,13 @@ function kube::build::docker_image_exists() {
 function kube::build::docker_delete_old_images() {
   # In Docker 1.12, we can replace this with
   #    docker images "$1" --format "{{.Tag}}"
-  for tag in $("${DOCKER[@]}" images "${1}" | tail -n +2 | awk '{print $2}') ; do
-    if [[ "${tag}" != "${2}"* ]] ; then
+  for tag in $("${DOCKER[@]}" images "${1}" | tail -n +2 | awk '{print $2}'); do
+    if [[ "${tag}" != "${2}"* ]]; then
       V=3 kube::log::status "Keeping image ${1}:${tag}"
       continue
     fi
 
-    if [[ -z "${3:-}" || "${tag}" != "${3}" ]] ; then
+    if [[ -z "${3:-}" || "${tag}" != "${3}" ]]; then
       V=2 kube::log::status "Deleting image ${1}:${tag}"
       "${DOCKER[@]}" rmi "${1}:${tag}" >/dev/null
     else
@@ -291,12 +323,12 @@ function kube::build::docker_delete_old_images() {
 function kube::build::docker_delete_old_containers() {
   # In Docker 1.12 we can replace this line with
   #   docker ps -a --format="{{.Names}}"
-  for container in $("${DOCKER[@]}" ps -a | tail -n +2 | awk '{print $NF}') ; do
-    if [[ "${container}" != "${1}"* ]] ; then
+  for container in $("${DOCKER[@]}" ps -a | tail -n +2 | awk '{print $NF}'); do
+    if [[ "${container}" != "${1}"* ]]; then
       V=3 kube::log::status "Keeping container ${container}"
       continue
     fi
-    if [[ -z "${2:-}" || "${container}" != "${2}" ]] ; then
+    if [[ -z "${2:-}" || "${container}" != "${2}" ]]; then
       V=2 kube::log::status "Deleting container ${container}"
       kube::build::destroy_container "${container}"
     else
@@ -327,7 +359,7 @@ function kube::build::short_hash() {
 # a workaround for bug https://github.com/docker/docker/issues/3968.
 function kube::build::destroy_container() {
   "${DOCKER[@]}" kill "$1" >/dev/null 2>&1 || true
-  if [[ $("${DOCKER[@]}" version --format '{{.Server.Version}}') = 17.06.0* ]]; then
+  if [[ $("${DOCKER[@]}" version --format '{{.Server.Version}}') == 17.06.0* ]]; then
     # Workaround https://github.com/moby/moby/issues/33948.
     # TODO: remove when 17.06.0 is not relevant anymore
     DOCKER_API_VERSION=v1.29 "${DOCKER[@]}" wait "$1" >/dev/null 2>&1 || true
@@ -340,16 +372,15 @@ function kube::build::destroy_container() {
 # ---------------------------------------------------------------------------
 # Building
 
-
 function kube::build::clean() {
-  if kube::build::has_docker ; then
+  if kube::build::has_docker; then
     kube::build::docker_delete_old_containers "${KUBE_BUILD_CONTAINER_NAME_BASE}"
     kube::build::docker_delete_old_containers "${KUBE_RSYNC_CONTAINER_NAME_BASE}"
     kube::build::docker_delete_old_containers "${KUBE_DATA_CONTAINER_NAME_BASE}"
     kube::build::docker_delete_old_images "${KUBE_BUILD_IMAGE_REPO}" "${KUBE_BUILD_IMAGE_TAG_BASE}"
 
     V=2 kube::log::status "Cleaning all untagged docker images"
-    "${DOCKER[@]}" rmi "$("${DOCKER[@]}" images -q --filter 'dangling=true')" 2> /dev/null || true
+    "${DOCKER[@]}" rmi "$("${DOCKER[@]}" images -q --filter 'dangling=true')" 2>/dev/null || true
   fi
 
   if [[ -d "${LOCAL_OUTPUT_ROOT}" ]]; then
@@ -360,27 +391,48 @@ function kube::build::clean() {
 
 # Set up the context directory for the kube-build image and build it.
 function kube::build::build_image() {
+  # 创建 编译容器 的 Dockerfile 的目录, 目录为： _output/images/kube-build:build-HASH-5-v1.16.1-1
   mkdir -p "${LOCAL_OUTPUT_BUILD_CONTEXT}"
   # Make sure the context directory owned by the right user for syncing sources to container.
+  # 修改 Dockerfile 所在的目录 的 属主和属组
   chown -R "${USER_ID}":"${GROUP_ID}" "${LOCAL_OUTPUT_BUILD_CONTEXT}"
 
+  # 将 时区文件 拷贝到 该目录中
   cp /etc/localtime "${LOCAL_OUTPUT_BUILD_CONTEXT}/"
   chmod u+w "${LOCAL_OUTPUT_BUILD_CONTEXT}/localtime"
 
+  # 拷贝 build/build-image/Dockerfile 文件 和 build/build-image/rsyncd.sh 脚本
   cp "${KUBE_ROOT}/build/build-image/Dockerfile" "${LOCAL_OUTPUT_BUILD_CONTEXT}/Dockerfile"
   cp "${KUBE_ROOT}/build/build-image/rsyncd.sh" "${LOCAL_OUTPUT_BUILD_CONTEXT}/"
-  dd if=/dev/urandom bs=512 count=1 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | dd bs=32 count=1 2>/dev/null > "${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password"
+  # dd 可从标准输入或文件中读取数据，根据指定的格式来转换数据，再输出到文件、设备或标准输出。
+  # 参数：if=文件名：输入文件名； of=文件名：输出文件名 ；bs=bytes：同时设置读入/输出的块大小为bytes个字节 ； count=blocks：仅拷贝blocks个块，块大小等于ibs指定的字节数。
+  # 生成随机的密码
+  dd if=/dev/urandom bs=512 count=1 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9' | dd bs=32 count=1 2>/dev/null >"${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password"
   chmod go= "${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password"
 
+  # 使用 docker 命令 build image
+  # 第一个参数：需要 build 的 image 名称
+  # 第二个参数：Dockerfile 所在的目录
+  # 第三个参数：-pull 参数，默认 true，表示是否下载最新的版本
+  # 第四个参数：--build-args 参数，表示build时的环境变量
+  # kube::build::docker_build 这个函数就是执行一个 docker build 命令
+  # 完整的 docker build 命令为：docker build -t "${image}" "--pull=${pull}" "${build_args[@]}" "${context_dir}"
   kube::build::docker_build "${KUBE_BUILD_IMAGE}" "${LOCAL_OUTPUT_BUILD_CONTEXT}" 'false' "--build-arg=KUBE_BUILD_IMAGE_CROSS_TAG=${KUBE_BUILD_IMAGE_CROSS_TAG} --build-arg=KUBE_BASE_IMAGE_REGISTRY=${KUBE_BASE_IMAGE_REGISTRY}"
 
   # Clean up old versions of everything
+  # 清除  所有满足正则 的 container
+  # 第一个参数，要清除的 container 名称的前缀
+  # 第二个参数，要保留的 container 名称
+  # 这里主要是清除 之前 编译构建的 BUILD、RSYNC、DATA cantainer
   kube::build::docker_delete_old_containers "${KUBE_BUILD_CONTAINER_NAME_BASE}" "${KUBE_BUILD_CONTAINER_NAME}"
   kube::build::docker_delete_old_containers "${KUBE_RSYNC_CONTAINER_NAME_BASE}" "${KUBE_RSYNC_CONTAINER_NAME}"
   kube::build::docker_delete_old_containers "${KUBE_DATA_CONTAINER_NAME_BASE}" "${KUBE_DATA_CONTAINER_NAME}"
-  kube::build::docker_delete_old_images "${KUBE_BUILD_IMAGE_REPO}" "${KUBE_BUILD_IMAGE_TAG_BASE}" "${KUBE_BUILD_IMAGE_TAG}"
 
+  # 删除所有与标签前缀匹配的 image（“当前”版本除外）
+  kube::build::docker_delete_old_images "${KUBE_BUILD_IMAGE_REPO}" "${KUBE_BUILD_IMAGE_TAG_BASE}" "${KUBE_BUILD_IMAGE_TAG}"
+  # 确保 DATA 容器运行
   kube::build::ensure_data_container
+  # 将 本机的数据 拷贝到 容器中
   kube::build::sync_to_container
 }
 
@@ -394,8 +446,9 @@ function kube::build::docker_build() {
   local -r context_dir=$2
   local -r pull="${3:-true}"
   local build_args
-  IFS=" " read -r -a build_args <<< "$4"
+  IFS=" " read -r -a build_args <<<"$4"
   readonly build_args
+  # 完整的 docker build 命令
   local -ra build_cmd=("${DOCKER[@]}" build -t "${image}" "--pull=${pull}" "${build_args[@]}" "${context_dir}")
 
   kube::log::status "Building Docker image ${image}"
@@ -422,8 +475,8 @@ function kube::build::ensure_data_container() {
   local code=0
 
   code=$(docker inspect \
-      -f '{{.State.ExitCode}}' \
-      "${KUBE_DATA_CONTAINER_NAME}" 2>/dev/null) || ret=$?
+    -f '{{.State.ExitCode}}' \
+    "${KUBE_DATA_CONTAINER_NAME}" 2>/dev/null) || ret=$?
   if [[ "${ret}" == 0 && "${code}" != 0 ]]; then
     kube::build::destroy_container "${KUBE_DATA_CONTAINER_NAME}"
     ret=1
@@ -443,7 +496,7 @@ function kube::build::ensure_data_container() {
     # libraries for true static building.
     local -ra docker_cmd=(
       "${DOCKER[@]}" run
-      --volume "${REMOTE_ROOT}"   # white-out the whole output dir
+      --volume "${REMOTE_ROOT}" # white-out the whole output dir
       --volume /usr/local/go/pkg/linux_386_cgo
       --volume /usr/local/go/pkg/linux_amd64_cgo
       --volume /usr/local/go/pkg/linux_arm_cgo
@@ -457,8 +510,8 @@ function kube::build::ensure_data_container() {
       --hostname "${HOSTNAME}"
       "${KUBE_BUILD_IMAGE}"
       chown -R "${USER_ID}":"${GROUP_ID}"
-        "${REMOTE_ROOT}"
-        /usr/local/go/pkg/
+      "${REMOTE_ROOT}"
+      /usr/local/go/pkg/
     )
     "${docker_cmd[@]}"
   fi
@@ -468,6 +521,7 @@ function kube::build::ensure_data_container() {
 # already been built.
 function kube::build::run_build_command() {
   kube::log::status "Running build command..."
+  # 执行 编译命令
   kube::build::run_build_command_ex "${KUBE_BUILD_CONTAINER_NAME}" -- "$@"
 }
 
@@ -476,11 +530,23 @@ function kube::build::run_build_command() {
 #
 # Arguments are in the form of
 #  <container name> <extra docker args> -- <command>
+# 传入参数格式为：<container name> <extra docker args> -- <command>
 function kube::build::run_build_command_ex() {
-  [[ $# != 0 ]] || { echo "Invalid input - please specify a container name." >&2; return 4; }
+  # $# 表示参数的个数
+  # 如果参数 == 0 报错
+  [[ $# != 0 ]] || {
+    echo "Invalid input - please specify a container name." >&2
+    return 4
+  }
+  # 第一个参数为 容器的名称
   local container_name="${1}"
   shift
 
+  # 运行运行时的 选项
+  # --name 容器的名称
+  # --user 以哪个用户运行容器
+  # --hostname 容器的hostname
+  # --volumes-from 挂载目录
   local -a docker_run_opts=(
     "--name=${container_name}"
     "--user=$(id -u):$(id -g)"
@@ -490,28 +556,44 @@ function kube::build::run_build_command_ex() {
 
   local detach=false
 
-  [[ $# != 0 ]] || { echo "Invalid input - please specify docker arguments followed by --." >&2; return 4; }
+  # 此时已经取出了第一个参数 $1 ，并且 shift 后，$1 就为第二个桉树
+  # $# 就为 总参数个数-1
+  [[ $# != 0 ]] || {
+    echo "Invalid input - please specify docker arguments followed by --." >&2
+    return 4
+  }
   # Everything before "--" is an arg to docker
-  until [ -z "${1-}" ] ; do
+  # until 循环执行一系列命令直至条件为 true 时停止。
+  # 此时 $1 为 第二个参数 extra docker args，也就是循环遍历所有的 选项
+  until [ -z "${1-}" ]; do
+    # 如果是  --  标识符，直接跳出
     if [[ "$1" == "--" ]]; then
       shift
       break
     fi
+    # 否则，将选项添加进  docker_run_opts
     docker_run_opts+=("$1")
-    if [[ "$1" == "-d" || "$1" == "--detach" ]] ; then
+    if [[ "$1" == "-d" || "$1" == "--detach" ]]; then
       detach=true
     fi
     shift
   done
 
   # Everything after "--" is the command to run
-  [[ $# != 0 ]] || { echo "Invalid input - please specify a command to run." >&2; return 4; }
+  # 在 -- 标识符后，是编译的命令，如果没有 则报错
+  [[ $# != 0 ]] || {
+    echo "Invalid input - please specify a command to run." >&2
+    return 4
+  }
+
   local -a cmd=()
-  until [ -z "${1-}" ] ; do
+  # 标准的 参数循环方法
+  until [ -z "${1-}" ]; do
     cmd+=("$1")
     shift
   done
 
+  # 添加环境变量：
   docker_run_opts+=(
     --env "KUBE_FASTBUILD=${KUBE_FASTBUILD:-false}"
     --env "KUBE_BUILDER_OS=${OSTYPE:-notdetected}"
@@ -545,27 +627,34 @@ function kube::build::run_build_command_ex() {
     docker_run_opts+=("--attach=stdout" "--attach=stderr")
   fi
 
+  # docker_cmd 是一个列表，里面包含了 docker run 的完整命令
   local -ra docker_cmd=(
     "${DOCKER[@]}" run "${docker_run_opts[@]}" "${KUBE_BUILD_IMAGE}")
 
   # Clean up container from any previous run
+  # 删掉之前构建时的同名 container
   kube::build::destroy_container "${container_name}"
+
+  # 执行构建操作的 具体命令
+  # docekr_cmd 是 docker run 的完整命令，而 cmd 是 构建的命令，也就是 make cross
   "${docker_cmd[@]}" "${cmd[@]}"
+
+  # 判断是否保留容器
   if [[ "${detach}" == false ]]; then
     kube::build::destroy_container "${container_name}"
   fi
 }
 
-function kube::build::rsync_probe {
+function kube::build::rsync_probe() {
   # Wait unil rsync is up and running.
   local tries=20
-  while (( tries > 0 )) ; do
+  while ((tries > 0)); do
     if rsync "rsync://k8s@${1}:${2}/" \
-         --password-file="${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password" \
-         &> /dev/null ; then
+      --password-file="${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password" \
+      &>/dev/null; then
       return 0
     fi
-    tries=$(( tries - 1))
+    tries=$((tries - 1))
     sleep 0.1
   done
 
@@ -579,7 +668,7 @@ function kube::build::rsync_probe {
 # rsync daemon can be reached out.
 function kube::build::start_rsyncd_container() {
   IPTOOL=ifconfig
-  if kube::build::has_ip ; then
+  if kube::build::has_ip; then
     IPTOOL="ip address"
   fi
   kube::build::stop_rsyncd_container
@@ -590,7 +679,7 @@ function kube::build::start_rsyncd_container() {
     -- /rsyncd.sh >/dev/null
 
   local mapped_port
-  if ! mapped_port=$("${DOCKER[@]}" port "${KUBE_RSYNC_CONTAINER_NAME}" ${KUBE_CONTAINER_RSYNC_PORT} 2> /dev/null | cut -d: -f 2) ; then
+  if ! mapped_port=$("${DOCKER[@]}" port "${KUBE_RSYNC_CONTAINER_NAME}" ${KUBE_CONTAINER_RSYNC_PORT} 2>/dev/null | cut -d: -f 2); then
     kube::log::error "Could not get effective rsync port"
     return 1
   fi
@@ -621,16 +710,16 @@ function kube::build::stop_rsyncd_container() {
   kube::build::destroy_container "${KUBE_RSYNC_CONTAINER_NAME}"
 }
 
-function kube::build::rsync {
+function kube::build::rsync() {
   local -a rsync_opts=(
     --archive
     "--password-file=${LOCAL_OUTPUT_BUILD_CONTEXT}/rsyncd.password"
   )
-  if (( KUBE_VERBOSE >= 6 )); then
+  if ((KUBE_VERBOSE >= 6)); then
     rsync_opts+=("-iv")
   fi
-  if (( KUBE_RSYNC_COMPRESS > 0 )); then
-     rsync_opts+=("--compress-level=${KUBE_RSYNC_COMPRESS}")
+  if ((KUBE_RSYNC_COMPRESS > 0)); then
+    rsync_opts+=("--compress-level=${KUBE_RSYNC_COMPRESS}")
   fi
   V=3 kube::log::status "Running rsync"
   rsync "${rsync_opts[@]}" "$@"
@@ -640,7 +729,7 @@ function kube::build::rsync {
 # container over the local network.
 function kube::build::sync_to_container() {
   kube::log::status "Syncing sources to container"
-
+  # 启动 RSYNCD 容器
   kube::build::start_rsyncd_container
 
   # rsync filters are a bit confusing.  Here we are syncing everything except
@@ -663,13 +752,16 @@ function kube::build::sync_to_container() {
     --filter='H generated.proto' \
     "${KUBE_ROOT}/" "rsync://k8s@${KUBE_RSYNC_ADDR}/k8s/"
 
+  # 关闭 RSYNCD 容器
   kube::build::stop_rsyncd_container
 }
 
 # Copy all build results back out.
+# 将 编译后的所有文件 从容器中 拷贝到 主机
 function kube::build::copy_output() {
   kube::log::status "Syncing out of container"
 
+  # 开启 RSYNCD 容器，并且会设置 该容器的 ip 地址 到 KUBE_RSYNC_ADDR 环境变量
   kube::build::start_rsyncd_container
 
   # The filter syntax for rsync is a little obscure. It filters on files and
@@ -680,6 +772,7 @@ function kube::build::copy_output() {
   #
   # We are looking to copy out all of the built binaries along with various
   # generated files.
+  # 使用 rsync 命令过滤 目录 进行有选择的拷贝
   kube::build::rsync \
     --prune-empty-dirs \
     --filter='- /_temp/' \
@@ -694,5 +787,6 @@ function kube::build::copy_output() {
     --filter='- /**' \
     "rsync://k8s@${KUBE_RSYNC_ADDR}/k8s/" "${KUBE_ROOT}"
 
+  # 关闭 RSYNCD 容器
   kube::build::stop_rsyncd_container
 }

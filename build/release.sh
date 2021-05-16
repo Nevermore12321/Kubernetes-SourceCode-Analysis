@@ -25,21 +25,32 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# 源码的 根目录
 KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
+
+# build/common.sh 会加载很多 环境变量，并且加载一些常用的公用方法
 source "${KUBE_ROOT}/build/common.sh"
+# lib/release.sh 加载一些与 容器环境构建相关的 方法
 source "${KUBE_ROOT}/build/lib/release.sh"
 
+# 是否开启 单元测试，默认开启
 KUBE_RELEASE_RUN_TESTS=${KUBE_RELEASE_RUN_TESTS-y}
 
+# 构建步骤：
+# 1. 容器构建环境的配置和验证
 kube::build::verify_prereqs
+# 2. build image 构建镜像
 kube::build::build_image
+# 3. 构建方法
 kube::build::run_build_command make cross
-
+#    3.1 是否开启单元测试
 if [[ $KUBE_RELEASE_RUN_TESTS =~ ^[yY]$ ]]; then
   kube::build::run_build_command make test
   kube::build::run_build_command make test-integration
 fi
 
+# 4. 将文件从容器中拷贝到主机
 kube::build::copy_output
 
+# 5. 打包
 kube::release::package_tarballs
